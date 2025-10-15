@@ -1,0 +1,5 @@
+{
+  "name": "Golden Royal Chat",
+  "description": "A sophisticated chat panel for user-admin communication with a luxurious dark and golden theme. It supports new user registration and remembers existing users, with a secret panel for administrators.",
+  "requestFramePermissions": []
+}
