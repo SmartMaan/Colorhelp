@@ -1,12 +1,76 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { database, serverTimestamp } from '../firebase';
 import { ref, onValue, off, push, update, set, get, increment, remove } from 'firebase/database';
 import { User, Message, AppConfig } from '../types';
-import { SendIcon, PowerIcon, BotIcon, UserIcon, CheckIcon, ReplyIcon, CloseIcon, PaperclipIcon, StarIcon, MenuIcon, TrashIcon, FrownIcon, MehIcon, SmileIcon } from './icons/Icons';
+import { SendIcon, PowerIcon, UserIcon, CheckIcon, ReplyIcon, CloseIcon, PaperclipIcon, StarIcon, MenuIcon, TrashIcon, FrownIcon, MehIcon, SmileIcon, PinIcon } from './icons/Icons';
 import { uploadFile } from '../utils/mediaUploader';
 import { formatTimestamp } from '../utils/formatTimestamp';
 
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮'];
+
+const renderWithLinks = (text: string) => {
+    if (!text) return <>{text}</>;
+
+    // Regex for URLs (with protocol or www), emails, and common phone number formats.
+    const linkRegex = /((?:https?:\/\/|www\.)[^\s/$.?#].[^\s]*)|(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b)|((?:\b\+?\d{1,3}[-.\s]*)?\(?\d{3}\)?[-.\s]*\d{3}[-.\s]*\d{4}\b)/g;
+
+    const onLinkClick = (e: React.MouseEvent<HTMLAnchorElement>, href: string, type: 'url' | 'email' | 'tel') => {
+        e.preventDefault();
+        if (type === 'url') {
+            if (window.confirm(`You are about to navigate to an external link:\n\n${href}\n\nDo you want to continue?`)) {
+                window.open(href, '_blank', 'noopener,noreferrer');
+            }
+        } else {
+            // For mailto: and tel:, let the browser/OS handle it directly without confirmation.
+            window.location.href = href;
+        }
+    };
+    
+    // FIX: Replaced `JSX.Element` with `React.ReactElement` to resolve "Cannot find namespace 'JSX'" error.
+    const elements: (string | React.ReactElement)[] = [];
+    let lastIndex = 0;
+    
+    for (const match of text.matchAll(linkRegex)) {
+        const [fullMatch, url, email, phone] = match;
+        const matchIndex = match.index || 0;
+
+        // Add the text before the match
+        if (matchIndex > lastIndex) {
+            elements.push(text.substring(lastIndex, matchIndex));
+        }
+        
+        // FIX: Replaced `JSX.Element` with `React.ReactElement` to resolve "Cannot find namespace 'JSX'" error.
+        let element: React.ReactElement;
+
+        if (url) {
+            const href = url.startsWith('www.') ? `http://${url}` : url;
+            element = <a key={matchIndex} href={href} onClick={(e) => onLinkClick(e, href, 'url')} style={{ color: 'var(--color-link)', textDecoration: 'underline', cursor: 'pointer' }} target="_blank" rel="noopener noreferrer">{url}</a>;
+        } else if (email) {
+            const href = `mailto:${email}`;
+            element = <a key={matchIndex} href={href} onClick={(e) => onLinkClick(e, href, 'email')} style={{ color: 'var(--color-link)', textDecoration: 'underline', cursor: 'pointer' }}>{email}</a>;
+        } else if (phone && phone.replace(/\D/g, '').length >= 7) { // Basic validation for digit count
+             const href = `tel:${phone.replace(/[^\d+]/g, '')}`;
+             element = <a key={matchIndex} href={href} onClick={(e) => onLinkClick(e, href, 'tel')} style={{ color: 'var(--color-link)', textDecoration: 'underline', cursor: 'pointer' }}>{phone}</a>;
+        } else {
+             // This case should ideally not be hit with this regex structure, but as a fallback, treat it as plain text.
+            elements.push(fullMatch);
+            lastIndex = matchIndex + fullMatch.length;
+            continue;
+        }
+        
+        elements.push(element);
+        lastIndex = matchIndex + fullMatch.length;
+    }
+
+    // Add any remaining text after the last match
+    if (lastIndex < text.length) {
+        elements.push(text.substring(lastIndex));
+    }
+
+    return <>{elements}</>;
+};
+
 
 interface UserChatProps {
     user: User;
@@ -34,6 +98,8 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
 
     const [contextMenuMsg, setContextMenuMsg] = useState<Message | null>(null);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState<Message | null>(null);
+    const [pinnedMessages, setPinnedMessages] = useState<Message[]>([]);
+    const [currentPinnedIndex, setCurrentPinnedIndex] = useState(0);
 
     const [imagePreview, setImagePreview] = useState<{ file: File, url: string } | null>(null);
     const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -72,7 +138,10 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
         const messagesRef = ref(database, `chats/${user.id}`);
         const unsubscribeMessages = onValue(messagesRef, (snapshot) => {
             const data = snapshot.val();
-            const loadedMessages = data ? Object.entries(data).map(([key, value]) => ({ id: key, ...(value as Message) })).sort((a, b) => a.timestamp - b.timestamp) : [];
+            const loadedMessages = data ? Object.entries(data)
+                .filter(([key]) => key !== 'pinned')
+                .map(([key, value]) => ({ id: key, ...(value as Message) }))
+                .sort((a, b) => a.timestamp - b.timestamp) : [];
             setMessages(loadedMessages);
         });
 
@@ -93,6 +162,24 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
         };
     }, [user.id, stopTyping]);
     
+    // Effect for Pinned Messages
+    useEffect(() => {
+        const pinnedRef = ref(database, `chats/${user.id}/pinned`);
+        const unsubscribe = onValue(pinnedRef, (snapshot) => {
+            if (snapshot.exists()) {
+                const pinnedIds = Object.keys(snapshot.val());
+                const newPinnedMessages = messages
+                    .filter(msg => pinnedIds.includes(msg.id))
+                    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+                setPinnedMessages(newPinnedMessages);
+                setCurrentPinnedIndex(0);
+            } else {
+                setPinnedMessages([]);
+            }
+        });
+        return () => unsubscribe();
+    }, [user.id, messages]);
+
     useEffect(() => {
         const updateUserActivity = () => {
              if (document.hasFocus()) {
@@ -232,8 +319,8 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
         const file = event.target.files?.[0];
         if (!file) return;
 
-        if (!appConfig.mediaUploadsEnabled) {
-            setUploadError('File uploads have been disabled by the admin.');
+        if (!appConfig.mediaUploadsEnabled || liveUser.mediaUploadsEnabled === false) {
+            setUploadError('File uploads have been disabled.');
             return;
         }
         if (!file.type.startsWith('image/')) {
@@ -336,6 +423,12 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
         setIsSending(false);
     };
 
+    const AdminAvatar = () => (
+        appConfig.agentProfileImageUrl ?
+            <img src={appConfig.agentProfileImageUrl} alt="Agent" style={{...styles.avatar, objectFit: 'cover'}} /> :
+            <div style={{...styles.avatar, ...styles.adminAvatar}}><UserIcon/></div>
+    );
+
     if (liveUser.isClosed) {
         return (
             <div style={styles.chatContainer} className="responsive-container">
@@ -391,38 +484,55 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
                 </div>
                 <button onClick={onLogout} style={styles.logoutButton} title="Logout"><PowerIcon height={20} width={20} /></button>
             </header>
-            <main style={styles.messagesArea} onClick={() => contextMenuMsg && setContextMenuMsg(null)}>
-                {messages.length === 0 && !isAdminTyping && (
-                    <div style={styles.welcomeContainer}>
-                        {appConfig.welcomeMessage && <p style={styles.welcomeMessageText}>{appConfig.welcomeMessage}</p>}
-                        {appConfig.helpSuggestions && appConfig.helpSuggestions.length > 0 && (
-                            <div style={styles.suggestionButtonsWrapper}>
-                                {appConfig.helpSuggestions.map((suggestion, index) => (
-                                    <button key={index} style={styles.suggestionButton} onClick={() => handleSuggestionClick(suggestion)} disabled={isSending}>
-                                        {suggestion}
-                                    </button>
-                                ))}
-                            </div>
-                        )}
+            {pinnedMessages.length > 0 && (
+                <div className="pinned-message-bar" onClick={() => handleReplyClick(pinnedMessages[currentPinnedIndex].id)}>
+                    <PinIcon style={{ color: 'var(--color-primary)', flexShrink: 0 }} width={18} height={18}/>
+                    <div style={{ overflow: 'hidden', flex: 1 }}>
+                        <strong style={{ color: 'var(--color-primary)', fontSize: '13px' }}>Pinned Message</strong>
+                        <p style={styles.pinnedText}>{pinnedMessages[currentPinnedIndex].text || 'Image'}</p>
                     </div>
-                )}
-                {messages.map(msg => (
-                    <div key={msg.id} id={`message-${msg.id}`} style={{ ...styles.messageWrapper, ...(msg.sender === 'user' ? styles.userMessage : styles.adminMessage) }} className={`message-container-hover ${msg.sender === 'admin' && !msg.readByUser ? 'persistent-highlight' : ''}`}>
-                        <button className="message-menu-button" onClick={(e) => { e.stopPropagation(); setContextMenuMsg(msg); }}><MenuIcon height={16} width={16} /></button>
-                        <div style={styles.messageInnerWrapper} data-message-id={msg.id} className={msg.sender === 'admin' ? 'admin-message-bubble' : ''}>
-                            <div style={{...styles.avatar, ...(msg.sender === 'user' ? styles.userAvatar : styles.adminAvatar)}}>
-                                {msg.sender === 'user' ? <UserIcon/> : <BotIcon/>}
+                    {pinnedMessages.length > 1 && (
+                        <div className="pinned-nav">
+                            <button onClick={(e) => { e.stopPropagation(); setCurrentPinnedIndex(i => (i - 1 + pinnedMessages.length) % pinnedMessages.length) }}>{'<'}</button>
+                            <span>{currentPinnedIndex + 1}/{pinnedMessages.length}</span>
+                            <button onClick={(e) => { e.stopPropagation(); setCurrentPinnedIndex(i => (i + 1) % pinnedMessages.length) }}>{'>'}</button>
+                        </div>
+                    )}
+                </div>
+            )}
+            <main style={styles.messagesArea} className="chat-background-container" onClick={() => contextMenuMsg && setContextMenuMsg(null)}>
+                <div style={{...styles.chatBackground, backgroundImage: `var(--image-background-chat)`, opacity: `var(--opacity-background-chat)`}}></div>
+                <div style={styles.chatContent}>
+                    {messages.length === 0 && !isAdminTyping && (
+                        <div style={styles.welcomeContainer}>
+                            {appConfig.welcomeMessage && <p style={styles.welcomeMessageText}>{appConfig.welcomeMessage}</p>}
+                            {appConfig.helpSuggestions && appConfig.helpSuggestions.length > 0 && (
+                                <div style={styles.suggestionButtonsWrapper}>
+                                    {appConfig.helpSuggestions.map((suggestion, index) => (
+                                        <button key={index} style={styles.suggestionButton} onClick={() => handleSuggestionClick(suggestion)} disabled={isSending}>
+                                            {suggestion}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {messages.map(msg => (
+                        <div key={msg.id} id={`message-${msg.id}`} style={{ ...styles.messageWrapper, ...(msg.sender === 'user' ? styles.userMessage : styles.adminMessage) }} className={`message-container-hover ${msg.sender === 'admin' && !msg.readByUser ? 'persistent-highlight' : ''}`}>
+                            <button className="message-menu-button" onClick={(e) => { e.stopPropagation(); setContextMenuMsg(msg); }}><MenuIcon height={16} width={16} /></button>
+                            <div style={{...styles.avatar, ...(msg.sender === 'user' ? styles.userAvatar : {})}}>
+                                {msg.sender === 'user' ? <UserIcon/> : <AdminAvatar />}
                             </div>
-                            <div className="message-content">
+                            <div className={`message-content ${msg.sender === 'admin' ? 'admin-message-bubble' : ''}`} data-message-id={msg.id}>
                                 {msg.replyTo && (
                                     <div style={styles.replyBox} onClick={() => handleReplyClick(msg.replyTo!.messageId)}>
                                         <strong>{msg.replyTo.senderName}</strong>
                                         <p style={styles.replyText}>{msg.replyTo.messageText || 'Image'}</p>
                                     </div>
                                 )}
-                                <div style={{...styles.messageBubble, ...(msg.sender === 'user' ? styles.userBubble : styles.adminBubble)}}>
+                                <div style={{...styles.messageBubble, ...(msg.sender === 'user' ? styles.userBubble : styles.adminBubble)}} className={msg.isHighlightedByAdmin ? 'highlighted-bubble' : ''}>
                                     {msg.mediaUrl && <img src={msg.mediaUrl} alt="uploaded content" style={styles.sentImage}/>}
-                                    {msg.text && <p style={styles.messageText}>{msg.text}</p>}
+                                    {msg.text && <p style={styles.messageText}>{renderWithLinks(msg.text)}</p>}
                                 </div>
                                 {msg.reactions && Object.keys(msg.reactions).length > 0 && (
                                     <div style={styles.reactionsContainer}>
@@ -434,6 +544,8 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
                                     </div>
                                 )}
                                 <div style={styles.messageInfo}>
+                                     {msg.isHighlightedByAdmin && <StarIcon style={{ color: 'var(--color-marked)' }} width={14} height={14} />}
+                                     {pinnedMessages.some(p => p.id === msg.id) && <PinIcon style={{ color: 'var(--color-text-muted)' }} width={12} height={12} />}
                                     <span style={styles.timestamp}>{formatTimestamp(msg.timestamp)}</span>
                                     {msg.editedAt && <span style={styles.editedIndicator}>(edited)</span>}
                                     {msg.sender === 'user' && (
@@ -445,19 +557,17 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
                                 </div>
                             </div>
                         </div>
-                    </div>
-                ))}
-                 {isAdminTyping && (
-                    <div style={{ ...styles.messageWrapper, ...styles.adminMessage }}>
-                        <div style={{...styles.avatar, ...styles.adminAvatar}}>
-                            <BotIcon/>
+                    ))}
+                     {isAdminTyping && (
+                        <div style={{ ...styles.messageWrapper, ...styles.adminMessage }}>
+                            <div style={{...styles.avatar, ...styles.adminAvatar}}><AdminAvatar /></div>
+                            <div style={{...styles.messageBubble, ...styles.adminBubble, ...styles.typingIndicator}}>
+                                <span>.</span><span>.</span><span>.</span>
+                            </div>
                         </div>
-                        <div style={{...styles.messageBubble, ...styles.adminBubble, ...styles.typingIndicator}}>
-                            <span>.</span><span>.</span><span>.</span>
-                        </div>
-                    </div>
-                )}
-                <div ref={messagesEndRef} />
+                    )}
+                    <div ref={messagesEndRef} />
+                </div>
             </main>
              {replyingTo && (
                 <div style={styles.replyingToArea}>
@@ -482,7 +592,7 @@ const UserChat: React.FC<UserChatProps> = ({ user, onLogout }) => {
             )}
              {uploadError && <div style={styles.errorArea}>{uploadError}</div>}
             <div style={styles.inputArea} className="chat-input-area">
-                 {!imagePreview && appConfig.mediaUploadsEnabled && (
+                 {!imagePreview && appConfig.mediaUploadsEnabled && liveUser.mediaUploadsEnabled !== false && (
                     <button type="button" onClick={() => fileInputRef.current?.click()} style={styles.attachButton} disabled={isSending}>
                         <PaperclipIcon />
                         <input type="file" ref={fileInputRef} onChange={handleFileChange} style={{display: 'none'}} accept="image/*"/>
@@ -571,28 +681,57 @@ const multiLineEllipsis: React.CSSProperties = {
     WebkitBoxOrient: 'vertical',
 };
 
+const pinnedTextEllipsis: React.CSSProperties = {
+    ...multiLineEllipsis,
+    WebkitLineClamp: 1,
+    fontSize: '12px'
+};
+
 const styles: { [key: string]: React.CSSProperties } = {
     chatContainer: { display: 'flex', flexDirection: 'column', width: '100%', maxWidth: '500px', height: '90vh', background: 'var(--color-background-panel)', borderRadius: '16px', boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)', overflow: 'hidden', border: '1px solid var(--color-border)', },
-    header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', background: 'var(--color-background-header)', backdropFilter: 'blur(10px) saturate(180%)', WebkitBackdropFilter: 'blur(10px) saturate(180%)', borderBottom: '1px solid var(--color-border)', },
+    header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px', background: 'var(--color-background-header)', backdropFilter: 'blur(var(--blur-effect)) saturate(180%)', WebkitBackdropFilter: 'blur(var(--blur-effect)) saturate(180%)', borderBottom: '1px solid var(--color-border)', flexShrink: 0 },
     headerTitle: { margin: 0, color: 'var(--color-primary)', fontWeight: 500 },
     agentStatus: { color: 'var(--color-text-muted)', fontSize: '12px', marginTop: '4px', height: '14px' },
     logoutButton: { background: 'none', border: 'none', cursor: 'pointer', padding: '4px', color: 'var(--color-primary)' },
-    messagesArea: { flex: 1, padding: '16px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' },
+    pinnedText: pinnedTextEllipsis,
+    messagesArea: { 
+        flex: 1, 
+        position: 'relative',
+        overflow: 'hidden', 
+        backgroundColor: 'var(--color-background-chat)' 
+    },
+    chatBackground: {
+        position: 'absolute',
+        top: 0, left: 0, right: 0, bottom: 0,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        zIndex: 0,
+    },
+    chatContent: {
+        position: 'relative',
+        zIndex: 1,
+        height: '100%',
+        overflowY: 'auto',
+        display: 'flex',
+        flexDirection: 'column',
+        padding: '16px',
+        gap: '4px',
+        boxSizing: 'border-box',
+    },
     welcomeContainer: { margin: 'auto', padding: '20px', textAlign: 'center', maxWidth: '80%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' },
     welcomeMessageText: { background: 'var(--color-background-input)', borderRadius: '12px', padding: '16px', color: 'var(--color-text-muted)', fontSize: '14px', lineHeight: 1.6, display: 'inline-block' },
     suggestionButtonsWrapper: { display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'center' },
     suggestionButton: { padding: '10px 16px', borderRadius: '20px', border: '1px solid var(--color-border)', background: 'var(--color-background-input)', color: 'var(--color-text-main)', cursor: 'pointer', transition: 'background-color 0.2s ease' },
-    messageWrapper: { display: 'flex', alignItems: 'flex-end', maxWidth: '80%', position: 'relative' },
-    messageInnerWrapper: { display: 'flex', alignItems: 'flex-end', gap: '10px', zIndex: 1 },
+    messageWrapper: { display: 'flex', alignItems: 'flex-end', maxWidth: '80%', position: 'relative', gap: '10px' },
     userMessage: { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
     adminMessage: { alignSelf: 'flex-start' },
     avatar: { width: '32px', height: '32px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
     userAvatar: { background: 'var(--color-primary)', color: 'var(--color-text-light)' },
-    adminAvatar: { background: 'var(--color-text-muted)', color: 'var(--color-background-panel)' },
-    messageBubble: { borderRadius: '18px', color: 'var(--color-text-main)', wordBreak: 'break-word', position: 'relative' },
+    adminAvatar: { background: 'var(--color-text-muted)', color: 'var(--color-background-panel)', padding: 0, border: '1px solid var(--color-border)' },
+    messageBubble: { borderRadius: 'var(--message-corner-radius, 18px)', color: 'var(--color-text-main)', wordBreak: 'break-word', position: 'relative' },
     adminBubble: { background: 'var(--color-background-bubble-admin)', color: 'var(--color-text-light)' },
     userBubble: { background: 'var(--color-background-bubble-user)' },
-    messageText: { margin: 0, padding: '10px 14px' },
+    messageText: { margin: 0, padding: '10px 14px', fontSize: 'var(--message-text-size, 15px)', whiteSpace: 'pre-wrap' },
     sentImage: { maxWidth: '100%', borderRadius: '16px', display: 'block', padding: '3px' },
     messageInfo: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginTop: '2px', paddingRight: '6px', gap: '8px' },
     timestamp: { color: 'var(--color-text-muted)', fontSize: '11px' },
@@ -602,7 +741,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     ticks: { display: 'inline-block', verticalAlign: 'bottom', height: '16px', color: 'var(--color-text-muted)' },
     reactionsContainer: { display: 'flex', gap: '4px', position: 'absolute', bottom: '-12px', left: '10px', zIndex: 2 },
     reactionBadge: { background: 'var(--color-background-input)', border: '1px solid var(--color-border)', borderRadius: '12px', padding: '2px 6px', fontSize: '12px' },
-    contextMenuBackdrop: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', zIndex: 9, },
+    contextMenuBackdrop: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(var(--blur-effect))', WebkitBackdropFilter: 'blur(var(--blur-effect))', zIndex: 9, },
     contextMenuSheet: { position: 'fixed', bottom: 0, left: 0, right: 0, background: 'var(--color-background-panel)', borderTopLeftRadius: '16px', borderTopRightRadius: '16px', padding: '16px', boxShadow: '0 -4px 20px rgba(0,0,0,0.3)', zIndex: 10, animation: 'slideUp 0.3s ease-out' },
     contextMenuSheetActions: { listStyle: 'none', margin: 0, padding: '8px 0 0 0', display: 'flex', flexDirection: 'column' },
     contextMenuItem: { display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', borderRadius: '8px', cursor: 'pointer', fontSize: '16px', background: 'none', border: 'none', color: 'var(--color-text-main)', textAlign: 'left' },
@@ -633,7 +772,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     feedbackTextarea: { width: '100%', maxWidth: '350px', minHeight: '80px', padding: '12px 18px', borderRadius: '12px', border: '1px solid var(--color-border)', fontSize: '16px', outline: 'none', background: 'var(--color-background-input)', color: 'var(--color-text-main)' },
     feedbackSubmitButton: { background: 'var(--color-primary)', color: 'var(--color-text-light)', border: 'none', width: 'auto', borderRadius: '12px', padding: '12px 24px', height: 'auto', fontSize: '16px', fontWeight: 500, cursor: 'pointer' },
     reopenButton: { marginTop: '24px', background: 'none', border: '1px solid var(--color-border)', color: 'var(--color-primary)', padding: '10px 20px', borderRadius: '8px', cursor: 'pointer' },
-    modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(5px)', WebkitBackdropFilter: 'blur(5px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 },
+    modalOverlay: { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(var(--blur-effect))', WebkitBackdropFilter: 'blur(var(--blur-effect))', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 },
     modalContent: { background: 'var(--color-background-panel)', padding: '24px', borderRadius: '16px', border: '1px solid var(--color-border)', width: '90%', maxWidth: '400px', textAlign: 'center', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' },
     modalTitle: { margin: '0 0 8px 0', color: 'var(--color-primary)' },
     modalText: { margin: '0 0 24px 0', color: 'var(--color-text-muted)' },

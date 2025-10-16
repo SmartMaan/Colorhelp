@@ -4,7 +4,7 @@ import { ref, set, get, update, onValue } from 'firebase/database';
 import { User } from '../types';
 
 interface LoginProps {
-    onLogin: (user: User, isAdmin: boolean) => void;
+    onLogin: (user: User, role: 'user' | 'admin' | 'master') => void;
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
@@ -28,10 +28,17 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         e.preventDefault();
         setError('');
 
+        // Secret Master Admin Login
+        if (name.trim() === 'colorclub' && email.trim() === 'mastercolor@club.com') {
+            const masterUser: User = { id: 'master', name: 'Master', email: 'master@app.com', phone: '' };
+            onLogin(masterUser, 'master');
+            return;
+        }
+        
         // Secret Admin Login
         if (name.trim() === '666club' && email.trim() === 'admin666@club.com') {
             const adminUser: User = { id: 'admin', name: 'Admin', email: 'admin@app.com', phone: '' };
-            onLogin(adminUser, true);
+            onLogin(adminUser, 'admin');
             return;
         }
 
@@ -86,7 +93,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
             if (!isGuest) {
                 localStorage.removeItem('guest_user_id');
             }
-            onLogin(user, false);
+            onLogin(user, 'user');
         } catch (err) {
             console.error(err);
             setError('Failed to login. Please try again.');
