@@ -4,14 +4,14 @@ import { getDatabase, serverTimestamp } from 'firebase/database';
 // The hardcoded config is now the only config used.
 // FIX: Export firebaseConfig so it can be imported and used elsewhere in the application.
 export const firebaseConfig = {
-  apiKey: "AIzaSyAPPZgVrZF9SEaS42xx8RcsnM2i8EpenUQ",
-  authDomain: "creadit-loan-5203b.firebaseapp.com",
-  databaseURL: "https://creadit-loan-5203b-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "creadit-loan-5203b",
-  storageBucket: "creadit-loan-5203b.appspot.com",
-  messagingSenderId: "95634892627",
-  appId: "1:95634892627:web:1500052cb60f3b7e4823a6",
-  measurementId: "G-V60FZSL5V1"
+  apiKey: "AIzaSyDnkwQk4Y11adyGkiCog4H8xi_ZjCgHUaE",
+  authDomain: "clubpkr-87519.firebaseapp.com",
+  databaseURL: "https://clubpkr-87519-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "clubpkr-87519",
+  storageBucket: "clubpkr-87519.firebasestorage.app",
+  messagingSenderId: "323435934947",
+  appId: "1:323435934947:web:97568617db4f891ce281d6",
+  measurementId: "G-CJ0RSGJ1Q2"
 };
 
 const app = initializeApp(firebaseConfig);
